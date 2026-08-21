@@ -1,0 +1,28 @@
+# Environment
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Build
+dist/
+build/
+.next/
+
+# OS
+.DS_Store
+Thumbs.db
