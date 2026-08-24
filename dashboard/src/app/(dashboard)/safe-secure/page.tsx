@@ -52,8 +52,10 @@ ChartJS.register(
   Legend
 );
 
-const HLS_URL = 'https://cctvjss.jogjakota.go.id/margo-utomo/Wisma-Ratih.stream/playlist.m3u8';
-const HLS_URL2 = 'https://cctvjss.jogjakota.go.id/margo-utomo/Wisma-Ratih.stream/playlist.m3u8';
+// const HLS_URL = 'https://cctvjss.jogjakota.go.id/margo-utomo/Wisma-Ratih.stream/playlist.m3u8';
+const HLS_URL = 'rtsp://admin:password1@10.251.102.191:555/Streaming/Channels/101';
+// const HLS_URL2 = 'https://cctvjss.jogjakota.go.id/margo-utomo/Wisma-Ratih.stream/playlist.m3u8';
+const HLS_URL2 = 'rtsp://admin:password1@10.251.102.191:554/Streaming/Channels/101';
 const CAMERA_NAME = 'Kamera Utama Depan';
 const CAMERA_NAME2 = 'Kamera Utama Belakang';
 

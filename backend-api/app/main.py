@@ -15,6 +15,7 @@ from .models import CountingIn, FrameDetectionIn
 from .helper_serializers import (
     build_today_series,
     map_count_row,
+    pick_frame_snapshot,
     wib_day_start_str,
     wib_now,
     generate_security_recommendations,
@@ -73,6 +74,28 @@ async def counting_latest(limit: int = Query(default=20, ge=1, le=200)):
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Gagal ambil data: {exc}")
         
     data = [map_count_row(r) for r in (resp.data or [])]
+
+    # Snapshot "Deteksi Terakhir": ambil PATH dari baris TERAKHIR di tabel frame,
+    # lalu bangun URL MinIO di kode (DB cuma simpan path, tanpa http).
+    if data:
+        try:
+            frame_resp = await (
+                supabase.table(settings.frame_table)
+                .select("*")
+                .order("id", desc=True)
+                .limit(1)
+                .execute()
+            )
+            frame_rows = frame_resp.data or []
+            if frame_rows:
+                snap = pick_frame_snapshot(
+                    frame_rows[0], settings.minio_public_url, settings.minio_bucket
+                )
+                if snap:
+                    data[0]["snapshot"] = snap  # baris terbaru = latestRow di frontend
+        except Exception:  # noqa: BLE001
+            logger.exception("Gagal ambil frame terakhir untuk snapshot")
+
     return {"success": True, "data": data}
 
 

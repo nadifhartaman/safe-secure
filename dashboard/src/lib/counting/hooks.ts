@@ -1,13 +1,30 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DETECTION_CATEGORIES,
   type DetectionKey,
 } from '@/lib/counting/type';
+import { supabase } from '@/lib/supabase';
+import { pickFrameSnapshot } from '@/lib/minio';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+// ---------------------------------------------------------------------------
+// Sumber data: LANGSUNG dari Supabase (engine -> DB, dashboard consume realtime).
+//   - counts   : frame_detection_count_table
+//   - snapshot : frame_detection_uploaded (baris terakhir -> URL MinIO)
+// Tidak lagi lewat FastAPI.
+// ---------------------------------------------------------------------------
+
+const COUNT_TABLE =
+  process.env.NEXT_PUBLIC_COUNT_TABLE ?? 'frame_detection_count_table';
+const FRAME_TABLE =
+  process.env.NEXT_PUBLIC_FRAME_TABLE ?? 'frame_detection_uploaded';
 const MAX_ROWS = 20;
+
+// Nama kolom sumber di frame_detection_count_table.
+const SRC_THROWING = 'throwing_detection_count';
+const SRC_SMOKING = 'smoking_detection_count';
+const SRC_TRESPASSING = 'trespassing_detection_count';
 
 export type HourBucket = { hour: string } & Record<DetectionKey, number>;
 export type CountingRow = {
@@ -33,113 +50,195 @@ function emptyCounts(): Record<DetectionKey, number> {
   ) as Record<DetectionKey, number>;
 }
 
-// Pastikan semua key kategori ada (default 0) walau backend tak mengirimnya.
-function normalizeRow(raw: Record<string, unknown>): CountingRow {
-  const row = {
+// created_at di count_table = `timestamp without time zone` dengan default WIB,
+// jadi string-nya naif (tanpa offset). Perlakukan sebagai WIB (+07:00) supaya
+// instant-nya benar walau browser bukan di zona WIB.
+function toIsoInstant(value: unknown): string {
+  const s = String(value ?? '').trim();
+  if (!s) return new Date().toISOString();
+  // sudah ada offset (Z / +hh:mm / -hh:mm setelah 'T') -> pakai apa adanya
+  const hasTz = /(?:Z|[+-]\d{2}:?\d{2})$/.test(s);
+  const iso = hasTz ? s : `${s.replace(' ', 'T')}+07:00`;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? s : d.toISOString();
+}
+
+// Satu row DB (count) -> satu baris kontrak frontend.
+function mapCountRow(raw: Record<string, unknown>): CountingRow {
+  return {
     id: Number(raw.id),
-    timestamp: String(raw.timestamp),
-    snapshot: (raw.snapshot as string) || undefined,
+    timestamp: toIsoInstant(raw.created_at),
     ...emptyCounts(),
-  } as CountingRow;
-  for (const c of DETECTION_CATEGORIES) row[c.key] = Number(raw[c.key] ?? 0);
-  return row;
+    throwing_count: Number(raw[SRC_THROWING] ?? 0),
+    smoking_count: Number(raw[SRC_SMOKING] ?? 0),
+    trespassing_count: Number(raw[SRC_TRESPASSING] ?? 0),
+  };
 }
 
-function normalizeBucket(raw: Record<string, unknown>): HourBucket {
-  const b = { hour: String(raw.hour), ...emptyCounts() } as HourBucket;
-  for (const c of DETECTION_CATEGORIES) b[c.key] = Number(raw[c.key] ?? 0);
-  return b;
+function wibDayStartNaive(): string {
+  // 'YYYY-MM-DDT00:00:00' menurut tanggal WIB sekarang (untuk filter kolom naif).
+  const now = new Date();
+  const wib = new Date(now.getTime() + 7 * 3600_000); // geser ke WIB
+  const y = wib.getUTCFullYear();
+  const m = String(wib.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(wib.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}T00:00:00`;
 }
 
-// Ambil array data, dukung envelope { success, data } maupun array langsung.
-async function fetchList(path: string): Promise<Record<string, unknown>[]> {
-  const res = await fetch(`${API_BASE}${path}`, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  const json = await res.json();
-  return Array.isArray(json) ? json : (json.data ?? []);
+function hourKey(ts: string): string {
+  const d = new Date(ts);
+  d.setMinutes(0, 0, 0);
+  return d.toISOString();
+}
+
+// Agregasi baris count hari ini -> bucket per jam (isi semua jam sampai jam kini).
+function buildTodaySeries(rows: Record<string, unknown>[]): HourBucket[] {
+  const buckets = new Map<string, HourBucket>();
+  for (const raw of rows) {
+    const row = mapCountRow(raw);
+    const key = hourKey(row.timestamp);
+    const b =
+      buckets.get(key) ?? ({ hour: key, ...emptyCounts() } as HourBucket);
+    for (const c of DETECTION_CATEGORIES) b[c.key] += row[c.key];
+    buckets.set(key, b);
+  }
+
+  // Isi jam kosong dari awal hari sampai jam sekarang biar chart mulus.
+  const start = new Date(hourKey(toIsoInstant(wibDayStartNaive())));
+  const end = new Date();
+  end.setMinutes(0, 0, 0);
+  const series: HourBucket[] = [];
+  for (let t = new Date(start); t <= end; t.setHours(t.getHours() + 1)) {
+    const key = t.toISOString();
+    series.push(buckets.get(key) ?? ({ hour: key, ...emptyCounts() } as HourBucket));
+  }
+  return series;
 }
 
 export function useCountingData(): CountingData {
   const [counts, setCounts] = useState<CountingRow[]>([]);
   const [todayData, setToday] = useState<HourBucket[]>([]);
+  const [snapshot, setSnapshot] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [latest, today] = await Promise.all([
-        fetchList('/api/counting/latest?limit=20'),
-        fetchList('/api/counting/today'),
-      ]);
-      setCounts(latest.map(normalizeRow));
-      setToday(today.map(normalizeBucket));
-      setLastUpdated(new Date());
-    } catch (err) {
-      console.error('fetch counting gagal:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const refreshRef = useRef<() => void>(() => {});
 
   useEffect(() => {
-    refresh();
+    let alive = true;
 
-    // ── Live stream (SSE) ──
-    const es = new EventSource(`${API_BASE}/api/counting/stream`);
-
-    es.onopen = () => setConnected(true);
-
-    es.onmessage = (e) => {
-      if (!e.data) return;
+    async function loadInitial() {
+      setLoading(true);
       try {
-        const row = normalizeRow(JSON.parse(e.data));
+        const [latest, today, frame] = await Promise.all([
+          supabase
+            .from(COUNT_TABLE)
+            .select('*')
+            .order('id', { ascending: false })
+            .limit(MAX_ROWS),
+          supabase
+            .from(COUNT_TABLE)
+            .select('*')
+            .gte('created_at', wibDayStartNaive())
+            .order('created_at', { ascending: true }),
+          supabase
+            .from(FRAME_TABLE)
+            .select('*')
+            .order('id', { ascending: false })
+            .limit(1),
+        ]);
+        if (!alive) return;
+        if (latest.error) throw latest.error;
+
+        setCounts((latest.data ?? []).map(mapCountRow));
+        setToday(buildTodaySeries(today.data ?? []));
+        setSnapshot(pickFrameSnapshot(frame.data?.[0]));
         setLastUpdated(new Date());
-        setCounts((prev) => [row, ...prev].slice(0, MAX_ROWS));
-
-        // Akumulasi ke bucket jam berjalan (buat chart), handle pergantian jam.
-        setToday((prev) => {
-          if (prev.length === 0) return prev;
-          const copy = [...prev];
-          const lastIdx = copy.length - 1;
-          const last = { ...copy[lastIdx] };
-          const rowHour = new Date(row.timestamp).getHours();
-          if (new Date(last.hour).getHours() === rowHour) {
-            for (const c of DETECTION_CATEGORIES) last[c.key] += row[c.key];
-            copy[lastIdx] = last;
-            return copy;
-          }
-          const bucketDate = new Date(row.timestamp);
-          bucketDate.setMinutes(0, 0, 0);
-          const fresh = { hour: bucketDate.toISOString(), ...emptyCounts() } as HourBucket;
-          for (const c of DETECTION_CATEGORIES) fresh[c.key] = row[c.key];
-          return [...copy, fresh];
-        });
-      } catch {
-        /* abaikan pesan yang tidak valid */
+      } catch (err) {
+        console.error('load awal Supabase gagal:', err);
+      } finally {
+        if (alive) setLoading(false);
       }
-    };
+    }
 
-    es.onerror = () => {
-      setConnected(false);
-      // EventSource otomatis reconnect; polling di bawah jadi cadangan.
-    };
+    refreshRef.current = loadInitial;
+    loadInitial();
 
-    // ── Polling fallback tiap 15 detik (koreksi drift / kalau SSE mati) ──
-    const poll = setInterval(refresh, 15_000);
+    // ── Realtime: INSERT di dua tabel ──
+    const channel = supabase
+      .channel('safe-secure')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: COUNT_TABLE },
+        (payload) => {
+          const row = mapCountRow(payload.new as Record<string, unknown>);
+          setLastUpdated(new Date());
+          setCounts((prev) => [row, ...prev].slice(0, MAX_ROWS));
+
+          // Akumulasi ke bucket jam berjalan (buat chart), handle pergantian jam.
+          setToday((prev) => {
+            const key = hourKey(row.timestamp);
+            const copy = [...prev];
+            const idx = copy.findIndex((b) => b.hour === key);
+            if (idx >= 0) {
+              const b = { ...copy[idx] };
+              for (const c of DETECTION_CATEGORIES) b[c.key] += row[c.key];
+              copy[idx] = b;
+              return copy;
+            }
+            const fresh = { hour: key, ...emptyCounts() } as HourBucket;
+            for (const c of DETECTION_CATEGORIES) fresh[c.key] = row[c.key];
+            return [...copy, fresh];
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: FRAME_TABLE },
+        (payload) => {
+          const snap = pickFrameSnapshot(payload.new as Record<string, unknown>);
+          if (snap) {
+            setSnapshot(snap);
+            setLastUpdated(new Date());
+          }
+        }
+      )
+      .subscribe((status) => {
+        setConnected(status === 'SUBSCRIBED');
+      });
 
     return () => {
-      es.close();
-      clearInterval(poll);
+      alive = false;
+      supabase.removeChannel(channel);
     };
-  }, [refresh]);
+  }, []);
 
-  const latestRow = counts[0] ?? null;
-  const totals = counts.reduce((acc, r) => {
-    for (const c of DETECTION_CATEGORIES) acc[c.key] += r[c.key];
-    return acc;
-  }, emptyCounts());
+  // latestRow = baris count terbaru + snapshot terbaru dari tabel frame.
+  const latestRow = useMemo<CountingRow | null>(() => {
+    const top = counts[0] ?? null;
+    if (!top) return null;
+    return snapshot ? { ...top, snapshot } : top;
+  }, [counts, snapshot]);
 
-  return { counts, todayData, latestRow, totals, loading, connected, lastUpdated, refresh };
+  const totals = useMemo(
+    () =>
+      counts.reduce((acc, r) => {
+        for (const c of DETECTION_CATEGORIES) acc[c.key] += r[c.key];
+        return acc;
+      }, emptyCounts()),
+    [counts]
+  );
+
+  const refresh = () => refreshRef.current();
+
+  return {
+    counts,
+    todayData,
+    latestRow,
+    totals,
+    loading,
+    connected,
+    lastUpdated,
+    refresh,
+  };
 }

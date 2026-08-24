@@ -25,6 +25,45 @@ SRC_THROWING = "throwing_detection_count"
 SRC_SMOKING = "smoking_detection_count"
 SRC_TRESPASSING = "trespassing_detection_count"
 
+# Kolom gambar di frame_detection_uploaded (urutan prioritas saat memilih snapshot).
+FRAME_KEYS = ["throwing_frame", "smoking_frame", "trespassing_frame"]
+
+
+def build_minio_url(path, base: str, bucket: str):
+    """Bangun URL http lengkap ke objek MinIO dari PATH yang tersimpan di DB.
+
+    - path kosong  -> None
+    - sudah http/https/data URI -> dikembalikan apa adanya
+    - selain itu   -> {base}/{bucket}/{path}
+      (kalau base kosong, kembalikan path absolut "/..." biar frontend bisa handle)
+    """
+    if not path:
+        return None
+    p = str(path).strip()
+    if not p:
+        return None
+    if p.startswith(("http://", "https://", "data:")):
+        return p
+
+    p = p.lstrip("/")
+    bucket = (bucket or "").strip("/")
+    if bucket and not p.startswith(bucket + "/"):
+        p = f"{bucket}/{p}"
+
+    base = (base or "").rstrip("/")
+    return f"{base}/{p}" if base else f"/{p}"
+
+
+def pick_frame_snapshot(frame_row: dict, base: str, bucket: str):
+    """Ambil URL snapshot pertama yang ada dari satu row frame_detection_uploaded."""
+    if not frame_row:
+        return None
+    for k in FRAME_KEYS:
+        url = build_minio_url(frame_row.get(k), base, bucket)
+        if url:
+            return url
+    return None
+
 
 def _aware(value) -> datetime:
     if isinstance(value, datetime):
@@ -42,8 +81,12 @@ def to_iso_z(value) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
-def map_count_row(r: dict) -> dict:
-    """Satu row DB -> satu baris kontrak (kategori tak tersedia = 0)."""
+def map_count_row(r: dict, snapshot=None) -> dict:
+    """Satu row DB -> satu baris kontrak (kategori tak tersedia = 0).
+
+    `snapshot` (opsional) = URL gambar MinIO untuk baris ini. Frontend membaca
+    field ini di latestRow.snapshot untuk kartu "Deteksi Terakhir".
+    """
     return {
         "id": r["id"],
         "timestamp": to_iso_z(r["created_at"]),
@@ -54,6 +97,7 @@ def map_count_row(r: dict) -> dict:
         "smoking_count": int(r.get(SRC_SMOKING) or 0),
         "trespassing_count": int(r.get(SRC_TRESPASSING) or 0),
         "vandalism_count": 0,
+        "snapshot": snapshot,
     }
 
 

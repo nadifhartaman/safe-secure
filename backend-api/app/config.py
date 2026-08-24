@@ -21,6 +21,12 @@ class Settings:
     frame_table: str = os.environ.get("FRAME_TABLE", "frame_detection_uploaded")
     rpc_bundle: str = os.environ.get("RPC_BUNDLE", "insert_frame_detection_bundle")
 
+    # MinIO: DB hanya menyimpan PATH objek (mis. "frames/throw_01.jpg"),
+    # http-nya dibangun di kode dari nilai di bawah ini.
+    #   URL akhir = {minio_public_url}/{minio_bucket}/{path}
+    minio_public_url: str = os.environ.get("MINIO_PUBLIC_URL", "")  # mis. http://localhost:9000
+    minio_bucket: str = os.environ.get("MINIO_BUCKET", "")          # mis. detections
+
     # Stream (SSE) polling & keep-alive
     stream_poll_sec: float = float(os.environ.get("STREAM_POLL_SEC", "1.5"))
     stream_ping_sec: float = float(os.environ.get("STREAM_PING_SEC", "15"))
