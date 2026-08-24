@@ -6,7 +6,7 @@ import {
   type DetectionKey,
 } from '@/lib/counting/type';
 import { supabase } from '@/lib/supabase';
-import { pickFrameSnapshot } from '@/lib/minio';
+import { buildMinioUrl } from '@/lib/minio';
 
 // ---------------------------------------------------------------------------
 // Sumber data: LANGSUNG dari Supabase (engine -> DB, dashboard consume realtime).
@@ -33,10 +33,44 @@ export type CountingRow = {
   snapshot?: string;
 } & Record<DetectionKey, number>;
 
+// Tiga jenis frame yang punya gambar snapshot sendiri.
+export type FrameType = 'throwing' | 'smoking' | 'trespassing';
+export type FrameSnapshots = Record<FrameType, string | null>;
+
+// Peta jenis -> nama kolom di frame_detection_uploaded.
+const FRAME_COL: Record<FrameType, string> = {
+  throwing: 'throwing_frame',
+  smoking: 'smoking_frame',
+  trespassing: 'trespassing_frame',
+};
+const FRAME_TYPES = Object.keys(FRAME_COL) as FrameType[];
+
+function emptySnapshots(): FrameSnapshots {
+  return { throwing: null, smoking: null, trespassing: null };
+}
+
+// Dari beberapa baris frame (urut id DESC / terbaru dulu), ambil URL gambar
+// TERAKHIR yang ada untuk masing-masing jenis (lewati yang null).
+function pickPerType(
+  rows: Record<string, unknown>[] | null | undefined
+): FrameSnapshots {
+  const out = emptySnapshots();
+  for (const row of rows ?? []) {
+    for (const t of FRAME_TYPES) {
+      if (!out[t]) {
+        const url = buildMinioUrl(row[FRAME_COL[t]] as string | null | undefined);
+        if (url) out[t] = url;
+      }
+    }
+  }
+  return out;
+}
+
 export interface CountingData {
   counts: CountingRow[];
   todayData: HourBucket[];
   latestRow: CountingRow | null;
+  snapshots: FrameSnapshots;
   totals: Record<DetectionKey, number>;
   loading: boolean;
   connected: boolean;
@@ -118,7 +152,7 @@ function buildTodaySeries(rows: Record<string, unknown>[]): HourBucket[] {
 export function useCountingData(): CountingData {
   const [counts, setCounts] = useState<CountingRow[]>([]);
   const [todayData, setToday] = useState<HourBucket[]>([]);
-  const [snapshot, setSnapshot] = useState<string | null>(null);
+  const [snapshots, setSnapshots] = useState<FrameSnapshots>(emptySnapshots);
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -141,18 +175,29 @@ export function useCountingData(): CountingData {
             .select('*')
             .gte('created_at', wibDayStartNaive())
             .order('created_at', { ascending: true }),
+          // Ambil beberapa baris terakhir supaya tiap jenis dapat gambar
+          // terakhirnya walau baris paling baru kolomnya null.
           supabase
             .from(FRAME_TABLE)
             .select('*')
             .order('id', { ascending: false })
-            .limit(1),
+            .limit(50),
         ]);
         if (!alive) return;
         if (latest.error) throw latest.error;
 
+        const initSnaps = pickPerType(frame.data);
+        // [DEBUG] cek load awal: error tabel frame (RLS?) & gambar per jenis
+        console.log('[safe-secure] init frame:', {
+          error: frame.error,
+          rowCount: frame.data?.length ?? 0,
+          snapshots: initSnaps,
+        });
+        if (today.error) console.warn('[safe-secure] today error:', today.error);
+
         setCounts((latest.data ?? []).map(mapCountRow));
         setToday(buildTodaySeries(today.data ?? []));
-        setSnapshot(pickFrameSnapshot(frame.data?.[0]));
+        setSnapshots(initSnaps);
         setLastUpdated(new Date());
       } catch (err) {
         console.error('load awal Supabase gagal:', err);
@@ -164,16 +209,28 @@ export function useCountingData(): CountingData {
     refreshRef.current = loadInitial;
     loadInitial();
 
-    // ── Realtime: INSERT di dua tabel ──
-    const channel = supabase
-      .channel('safe-secure')
+    // ── Realtime: pisah jadi 2 channel (1 channel banyak listener kadang flaky) ──
+    // event: '*' sengaja, biar kelihatan kalau ADA perubahan apa pun yang masuk.
+    const countCh = supabase
+      .channel('safe-secure-count')
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: COUNT_TABLE },
+        { event: '*', schema: 'public', table: COUNT_TABLE },
         (payload) => {
+          console.log(
+            '[safe-secure] COUNT event:',
+            payload.eventType,
+            (payload.new as Record<string, unknown>)?.id
+          ); // [DEBUG]
+          if (payload.eventType !== 'INSERT') return;
           const row = mapCountRow(payload.new as Record<string, unknown>);
           setLastUpdated(new Date());
-          setCounts((prev) => [row, ...prev].slice(0, MAX_ROWS));
+          // Cegah id ganda (realtime kadang kirim ulang / bertabrakan load awal).
+          setCounts((prev) =>
+            prev.some((r) => r.id === row.id)
+              ? prev
+              : [row, ...prev].slice(0, MAX_ROWS)
+          );
 
           // Akumulasi ke bucket jam berjalan (buat chart), handle pergantian jam.
           setToday((prev) => {
@@ -192,33 +249,58 @@ export function useCountingData(): CountingData {
           });
         }
       )
+      .subscribe((status, err) => {
+        console.log('[safe-secure] COUNT channel status:', status, err ?? ''); // [DEBUG]
+        setConnected(status === 'SUBSCRIBED');
+      });
+
+    const frameCh = supabase
+      .channel('safe-secure-frame')
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: FRAME_TABLE },
+        { event: '*', schema: 'public', table: FRAME_TABLE },
         (payload) => {
-          const snap = pickFrameSnapshot(payload.new as Record<string, unknown>);
-          if (snap) {
-            setSnapshot(snap);
-            setLastUpdated(new Date());
-          }
+          console.log('[safe-secure] FRAME event:', payload.eventType); // [DEBUG]
+          if (payload.eventType !== 'INSERT') return;
+          const row = payload.new as Record<string, unknown>;
+          // Update gambar per jenis; jenis yang null di baris ini TETAP pakai
+          // gambar sebelumnya (nggak dikosongin).
+          setSnapshots((prev) => {
+            const next = { ...prev };
+            let changed = false;
+            for (const t of FRAME_TYPES) {
+              const url = buildMinioUrl(row[FRAME_COL[t]] as string | null | undefined);
+              if (url) {
+                next[t] = url;
+                changed = true;
+              }
+            }
+            return changed ? next : prev;
+          });
+          console.log('[safe-secure] FRAME insert:', {
+            throwing_frame: row.throwing_frame,
+            smoking_frame: row.smoking_frame,
+            trespassing_frame: row.trespassing_frame,
+          }); // [DEBUG]
+          setLastUpdated(new Date());
         }
       )
-      .subscribe((status) => {
-        setConnected(status === 'SUBSCRIBED');
+      .subscribe((status, err) => {
+        console.log('[safe-secure] FRAME channel status:', status, err ?? ''); // [DEBUG]
       });
 
     return () => {
       alive = false;
-      supabase.removeChannel(channel);
+      supabase.removeChannel(countCh);
+      supabase.removeChannel(frameCh);
     };
   }, []);
 
-  // latestRow = baris count terbaru + snapshot terbaru dari tabel frame.
-  const latestRow = useMemo<CountingRow | null>(() => {
-    const top = counts[0] ?? null;
-    if (!top) return null;
-    return snapshot ? { ...top, snapshot } : top;
-  }, [counts, snapshot]);
+  // latestRow = baris count terbaru (buat KPI, rekomendasi, badge).
+  const latestRow = useMemo<CountingRow | null>(
+    () => counts[0] ?? null,
+    [counts]
+  );
 
   const totals = useMemo(
     () =>
@@ -235,6 +317,7 @@ export function useCountingData(): CountingData {
     counts,
     todayData,
     latestRow,
+    snapshots,
     totals,
     loading,
     connected,

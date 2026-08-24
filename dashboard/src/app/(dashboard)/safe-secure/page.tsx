@@ -73,6 +73,7 @@ export default function SecurePage() {
     counts,
     todayData,
     latestRow,
+    snapshots,
     loading,
     connected,
     lastUpdated,
@@ -178,8 +179,8 @@ export default function SecurePage() {
         </section>
 
         {/* ── Video + snapshot ── */}
-        <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <Card className="overflow-hidden lg:col-span-2 justify-end flex flex-col bg-white rounded-lg">
+        <section className="grid grid-cols-1 gap-4 lg:grid-cols-1">
+          {/* <Card className="overflow-hidden lg:col-span-2 justify-end flex flex-col bg-white rounded-lg">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b py-3 h-full">
               <CardTitle className="flex items-center gap-2 text-sm font-medium text-black">
                 <Camera className="h-4 w-4 text-sky-600" />
@@ -194,7 +195,7 @@ export default function SecurePage() {
                 <HlsPlayer src={HLS_URL2} />
               </div>
             </CardContent>
-          </Card>
+          </Card> */}
 
           <Card className="overflow-hidden">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b py-3">
@@ -204,28 +205,47 @@ export default function SecurePage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              <div className="relative aspect-video w-full bg-muted">
-                {(() => {
-                  const src = snapshotSrc(latestRow?.snapshot);
-                  return src ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={src} alt="Detection snapshot" className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-                      <Camera className="h-7 w-7 opacity-40" />
-                      <p className="text-xs">Belum ada snapshot</p>
+              <div className="p-2">
+                <div className="grid grid-cols-3 gap-2">
+                {([
+                  { key: 'throwing', label: 'Throwing Object', color: '#f59e0b' },
+                  { key: 'smoking', label: 'Smoking', color: '#0ea5e9' },
+                  { key: 'trespassing', label: 'Trespassing', color: '#ec4899' },
+                ] as const).map((slot) => {
+                  const src = snapshotSrc(snapshots[slot.key] ?? undefined);
+                  return (
+                    <div
+                      key={slot.key}
+                      className="relative aspect-video w-full overflow-hidden rounded-md bg-muted"
+                    >
+                      {src ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={src}
+                          alt={slot.label}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full flex-col items-center justify-center gap-1.5 text-muted-foreground">
+                          <Camera className="h-6 w-6 opacity-40" />
+                          <p className="text-[10px]">Belum ada gambar</p>
+                        </div>
+                      )}
+                      <span
+                        className="absolute left-1.5 top-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium text-white"
+                        style={{ backgroundColor: `${slot.color}d9` }}
+                      >
+                        {slot.label}
+                      </span>
                     </div>
                   );
-                })()}
+                })}
+                </div>
 
-                {latestRow && (
-                  <div className="absolute bottom-2 left-2 flex flex-wrap gap-1.5">
-                    {recentThreats > 0 && (
-                      <span className="rounded-full bg-red-600/85 px-2 py-0.5 text-[10px] font-medium text-white tabular-nums">
-                        {recentThreats} ancaman
-                      </span>
-                    )}
-                  </div>
+                {recentThreats > 0 && (
+                  <span className="mt-2 inline-block w-fit rounded-full bg-red-600/85 px-2 py-0.5 text-[10px] font-medium text-white tabular-nums">
+                    {recentThreats} ancaman terkini
+                  </span>
                 )}
               </div>
               <Card className='rounded-none border-none '>

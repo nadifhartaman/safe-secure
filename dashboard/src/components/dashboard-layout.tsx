@@ -75,33 +75,33 @@ export const menuData: MenuItem[] = [
     icon: "Shield",
     url: "/safe-secure"
   },
-  {
-    name: "Mobility",
-    icon: "Car",
-    submenus: [
-      { name: "Plat", url: "" },
-      { name: "Crowd", url: "" },
-      { name: "Absensi Wajah", url: "https://absensi.indismart.co.id/" },
-    ]
-  },
-  {
-    name: "Oil & Gas & Mining",
-    icon: "Flame",
-    url: "/oil-gas",
-    submenus: [
-      { name: "APD", url: "" },
-      { name: "Safe Zone Detection", url: "" },
-    ]
-  },
-  {
-    name: "Building & Facility Management",
-    icon: "Building2",
-    url: "/building",
-    submenus: [
-      { name: "Building Monitoring", url: "http://localhost:5000/" },
-      { name: "Structural Health Monitoring", url: "https://mirra.indismart.co.id/" },
-    ]
-  },
+  // {
+  //   name: "Mobility",
+  //   icon: "Car",
+  //   submenus: [
+  //     { name: "Plat", url: "" },
+  //     { name: "Crowd", url: "" },
+  //     { name: "Absensi Wajah", url: "https://absensi.indismart.co.id/" },
+  //   ]
+  // },
+  // {
+  //   name: "Oil & Gas & Mining",
+  //   icon: "Flame",
+  //   url: "/oil-gas",
+  //   submenus: [
+  //     { name: "APD", url: "" },
+  //     { name: "Safe Zone Detection", url: "" },
+  //   ]
+  // },
+  // {
+  //   name: "Building & Facility Management",
+  //   icon: "Building2",
+  //   url: "/building",
+  //   submenus: [
+  //     { name: "Building Monitoring", url: "http://localhost:5000/" },
+  //     { name: "Structural Health Monitoring", url: "https://mirra.indismart.co.id/" },
+  //   ]
+  // },
 ];
 
 export default function DashboardLayout({
