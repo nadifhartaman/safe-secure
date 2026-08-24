@@ -8,5 +8,5 @@ RUN npm install
 
 COPY . .
 
-EXPOSE 9016
-CMD ["npx", "next", "dev", "-H", "0.0.0.0", "-p", "9016"]
+EXPOSE 9020
+CMD ["npx", "next", "dev", "-H", "0.0.0.0", "-p", "9020"]
