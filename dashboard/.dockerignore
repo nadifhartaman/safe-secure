@@ -1,0 +1,13 @@
+# Node / Next.js — WAJIB, biar node_modules & build host tidak menimpa hasil container
+node_modules/
+.next/
+out/
+
+# VCS & log
+.git/
+.gitignore
+npm-debug.log*
+yarn-error.log*
+
+# Env lokal ikut? untuk mode dev NEXT_PUBLIC_* dibaca dari .env,
+# jadi .env TIDAK di-ignore. Kalau mau pass via compose, tambahkan .env di sini.

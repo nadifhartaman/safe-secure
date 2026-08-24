@@ -1,0 +1,16 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# VCS
+.git/
+.gitignore
+
+# Lain-lain
+*.md
+
+# CATATAN: .env sengaja TIDAK di-ignore karena config.py memakai load_dotenv().
+# Kalau nanti pindah ke env_file/environment di compose, tambahkan baris: .env
