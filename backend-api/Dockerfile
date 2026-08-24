@@ -1,3 +1,4 @@
+# PERBAIKAN BE PYTHON
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -6,14 +7,16 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Buat user dulu
+RUN useradd -m appuser
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy file dengan kepemilikan appuser
+COPY --chown=appuser:appuser . .
 
-# run sebagai non-root
-RUN useradd -m appuser
 USER appuser
 
 EXPOSE 9019
